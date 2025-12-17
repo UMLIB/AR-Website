@@ -1,0 +1,207 @@
+<html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+    
+    <script>
+      // 1. 系統元件：負責計算誰離中心最近
+      AFRAME.registerComponent('target-priority-manager', {
+        init: function () {
+          this.activeTargets = [];
+          this.camera = null;
+        },
+        registerTarget: function(el, videoEl, contentEl) {
+          this.activeTargets.push({ el: el, video: videoEl, content: contentEl });
+        },
+        unregisterTarget: function(el) {
+          const index = this.activeTargets.findIndex(item => item.el === el);
+          if (index > -1) {
+            const item = this.activeTargets[index];
+            if (item.video) item.video.pause();
+            if (item.content) item.content.object3D.visible = false;
+            this.activeTargets.splice(index, 1);
+          }
+        },
+        tick: function () {
+          if (this.activeTargets.length === 0) return;
+          if (!this.camera) {
+            this.camera = this.el.sceneEl.camera;
+            return;
+          }
+
+          let closestItem = null;
+          let minDistance = Infinity;
+
+          this.activeTargets.forEach(item => {
+            const vector = new THREE.Vector3();
+            item.el.object3D.getWorldPosition(vector);
+            vector.project(this.camera);
+            const distance = vector.x * vector.x + vector.y * vector.y;
+
+            if (distance < minDistance) {
+              minDistance = distance;
+              closestItem = item;
+            }
+          });
+
+          this.activeTargets.forEach(item => {
+            const isWinner = (item === closestItem);
+            if (isWinner) {
+              if (item.content && !item.content.object3D.visible) {
+                item.content.object3D.visible = true;
+              }
+              if (item.video && item.video.paused) {
+                item.video.play().catch(e => {}); 
+              }
+            } else {
+              if (item.content && item.content.object3D.visible) {
+                item.content.object3D.visible = false;
+              }
+              if (item.video && !item.video.paused) {
+                item.video.pause();
+              }
+            }
+          });
+        }
+      });
+
+      // 2. Play/Pause logic
+      AFRAME.registerComponent('play-on-target', {
+        schema: {
+          video: {type: 'selector'}
+        },
+        init: function () {
+          const videoEl = this.data.video;
+          const contentEl = this.el.querySelector('a-video'); 
+          
+          if (!videoEl || !contentEl) return;
+
+          contentEl.object3D.visible = false;
+          const scene = this.el.sceneEl;
+          
+          this.el.addEventListener('targetFound', () => {
+            scene.components['target-priority-manager'].registerTarget(this.el, videoEl, contentEl);
+          });
+
+          this.el.addEventListener('targetLost', () => {
+            scene.components['target-priority-manager'].unregisterTarget(this.el);
+          });
+        }
+      });
+
+      // 3. Pinch to Zoom logic
+      AFRAME.registerComponent('pinch-to-zoom', {
+        schema: {
+          minScale: {default: 0.5},
+          maxScale: {default: 3.0}
+        },
+        init: function () {
+          this.initialDistance = 0;
+          this.initialScale = 1;
+          this.isPinching = false;
+          this.handleTouchStart = this.handleTouchStart.bind(this);
+          this.handleTouchMove = this.handleTouchMove.bind(this);
+          this.handleTouchEnd = this.handleTouchEnd.bind(this);
+          window.addEventListener('touchstart', this.handleTouchStart);
+          window.addEventListener('touchmove', this.handleTouchMove, {passive: false});
+          window.addEventListener('touchend', this.handleTouchEnd);
+        },
+        remove: function() {
+          window.removeEventListener('touchstart', this.handleTouchStart);
+          window.removeEventListener('touchmove', this.handleTouchMove);
+          window.removeEventListener('touchend', this.handleTouchEnd);
+        },
+        handleTouchStart: function (e) {
+          if (e.touches.length !== 2 || !this.el.object3D.visible) return;
+          this.isPinching = true;
+          this.initialDistance = this.getDistance(e.touches[0], e.touches[1]);
+          this.initialScale = this.el.object3D.scale.x;
+        },
+        handleTouchMove: function (e) {
+          if (!this.isPinching || e.touches.length !== 2 || !this.el.object3D.visible) return;
+          e.preventDefault();
+          const currentDistance = this.getDistance(e.touches[0], e.touches[1]);
+          if (this.initialDistance === 0) return;
+          const scaleFactor = currentDistance / this.initialDistance;
+          let newScale = this.initialScale * scaleFactor;
+          newScale = Math.min(Math.max(newScale, this.data.minScale), this.data.maxScale);
+          this.el.object3D.scale.set(newScale, newScale, newScale);
+        },
+        handleTouchEnd: function (e) {
+          if (e.touches.length < 2) this.isPinching = false;
+        },
+        getDistance: function (touch1, touch2) {
+          const dx = touch1.clientX - touch2.clientX;
+          const dy = touch1.clientY - touch2.clientY;
+          return Math.sqrt(dx * dx + dy * dy);
+        }
+      });
+    </script>
+  </head>
+  <body>
+    <!-- 場景定義 -->
+    <a-scene mindar-image="imageTargetSrc: assets/targets.mind; filterMinCF:0.0005; filterBeta: 0; warmupTolerance: 1;" 
+             color-space="sRGB" 
+             renderer="colorManagement: true, physicallyCorrectLights" 
+             vr-mode-ui="enabled: false" 
+             device-orientation-permission-ui="enabled: false"
+             target-priority-manager>
+      
+      <a-assets>
+        <video id="vid1" src="assets/asset1.mp4" preload="auto" loop="true" playsinline webkit-playsinline muted crossorigin="anonymous"></video>
+        <video id="vid2" src="assets/asset2.mp4" preload="auto" loop="true" playsinline webkit-playsinline muted crossorigin="anonymous"></video>
+        <video id="vid3" src="assets/asset3.mp4" preload="auto" loop="true" playsinline webkit-playsinline muted crossorigin="anonymous"></video>
+        <video id="vid4" src="assets/asset4.mp4" preload="auto" loop="true" playsinline webkit-playsinline muted crossorigin="anonymous"></video>
+        <video id="vid5" src="assets/asset5.mp4" preload="auto" loop="true" playsinline webkit-playsinline muted crossorigin="anonymous"></video>
+      </a-assets>
+
+      <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+
+      <!-- 注意：這裡的特定 Target 實體已移除，交由下方的 Script 自動產生 -->
+
+    </a-scene>
+
+    <!-- 自動產生 Target 的腳本 -->
+    <script>
+      document.addEventListener("DOMContentLoaded", function() {
+        const scene = document.querySelector('a-scene');
+
+        // ==========================
+        // 配置區域：在此定義哪個 TargetIndex 播放哪個視頻
+        // ==========================
+        const config = [
+          { targets: [0, 1, 2],    video: '#vid1' }, // Model 1: 迪迦
+          { targets: [3, 4, 5],    video: '#vid2' }, // Model 2: 野比大雄
+          { targets: [6, 7, 8],    video: '#vid3' }, // Model 3: 泰迦
+          { targets: [9, 10],      video: '#vid4' }, // Model 4: 龍貓
+          { targets: [11, 12, 13], video: '#vid5' }  // Model 5: 傻鴨
+        ];
+
+        // 循環生成實體
+        config.forEach(group => {
+          group.targets.forEach(index => {
+            // 1. 建立父實體: <a-entity mindar-image-target="..." play-on-target="...">
+            const entity = document.createElement('a-entity');
+            entity.setAttribute('mindar-image-target', `targetIndex: ${index}`);
+            entity.setAttribute('play-on-target', `video: ${group.video}`);
+
+            // 2. 建立視訊實體: <a-video src="..." ... pinch-to-zoom>
+            const videoEl = document.createElement('a-video');
+            videoEl.setAttribute('src', group.video);
+            // 這裡設定初始位置和大小
+            videoEl.setAttribute('position', '0 0 0');
+            videoEl.setAttribute('height', '0.552');
+            videoEl.setAttribute('width', '1');
+            // 添加 pinch-to-zoom 組件
+            videoEl.setAttribute('pinch-to-zoom', '');
+
+            // 3. 組裝並加入場景
+            entity.appendChild(videoEl);
+            scene.appendChild(entity);
+          });
+        });
+      });
+    </script>
+  </body>
+</html>
