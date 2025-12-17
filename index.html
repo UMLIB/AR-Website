@@ -1,0 +1,266 @@
+<html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AR Video with Sound</title>
+    <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+    
+    <style>
+      /* 启动画面的样式 */
+      #start-screen {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.9);
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        color: white;
+        font-family: sans-serif;
+      }
+      #start-btn {
+        padding: 15px 30px;
+        font-size: 18px;
+        background: #007bff;
+        color: white;
+        border: none;
+        border-radius: 5px;
+        cursor: pointer;
+        margin-top: 20px;
+      }
+    </style>
+
+    <script>
+      // 1. 系統元件：負責計算誰離中心最近 (負責聲音和畫面的開關)
+      AFRAME.registerComponent('target-priority-manager', {
+        init: function () {
+          this.activeTargets = [];
+          this.camera = null;
+        },
+        registerTarget: function(el, videoEl, contentEl) {
+          this.activeTargets.push({ el: el, video: videoEl, content: contentEl });
+        },
+        unregisterTarget: function(el) {
+          const index = this.activeTargets.findIndex(item => item.el === el);
+          if (index > -1) {
+            const item = this.activeTargets[index];
+            if (item.video) item.video.pause();
+            if (item.content) item.content.object3D.visible = false;
+            this.activeTargets.splice(index, 1);
+          }
+        },
+        tick: function () {
+          if (this.activeTargets.length === 0) return;
+          if (!this.camera) {
+            this.camera = this.el.sceneEl.camera;
+            return;
+          }
+
+          let closestItem = null;
+          let minDistance = Infinity;
+
+          // 計算距離
+          this.activeTargets.forEach(item => {
+            const vector = new THREE.Vector3();
+            item.el.object3D.getWorldPosition(vector);
+            vector.project(this.camera);
+            const distance = vector.x * vector.x + vector.y * vector.y;
+
+            if (distance < minDistance) {
+              minDistance = distance;
+              closestItem = item;
+            }
+          });
+
+          // 管理播放狀態
+          this.activeTargets.forEach(item => {
+            const isWinner = (item === closestItem);
+            
+            if (isWinner) {
+              // 顯示畫面
+              if (item.content && !item.content.object3D.visible) {
+                item.content.object3D.visible = true;
+              }
+              // 播放影片（開啟聲音）
+              if (item.video && item.video.paused) {
+                // 確保聲音是開啟的
+                item.video.muted = false; 
+                item.video.play().catch(e => console.log("Play error:", e)); 
+              }
+            } else {
+              // 隱藏畫面
+              if (item.content && item.content.object3D.visible) {
+                item.content.object3D.visible = false;
+              }
+              // 暫停影片
+              if (item.video && !item.video.paused) {
+                item.video.pause();
+              }
+            }
+          });
+        }
+      });
+
+      // 2. Play/Pause logic
+      AFRAME.registerComponent('play-on-target', {
+        schema: {
+          video: {type: 'selector'}
+        },
+        init: function () {
+          const videoEl = this.data.video;
+          const contentEl = this.el.querySelector('a-video'); 
+          
+          if (!videoEl || !contentEl) return;
+
+          contentEl.object3D.visible = false;
+          const scene = this.el.sceneEl;
+          
+          this.el.addEventListener('targetFound', () => {
+            scene.components['target-priority-manager'].registerTarget(this.el, videoEl, contentEl);
+          });
+
+          this.el.addEventListener('targetLost', () => {
+            scene.components['target-priority-manager'].unregisterTarget(this.el);
+          });
+        }
+      });
+
+      // 3. Pinch to Zoom
+      AFRAME.registerComponent('pinch-to-zoom', {
+        schema: { minScale: {default: 0.5}, maxScale: {default: 3.0} },
+        init: function () {
+          this.initialDistance = 0;
+          this.initialScale = 1;
+          this.isPinching = false;
+          this.handleTouchStart = this.handleTouchStart.bind(this);
+          this.handleTouchMove = this.handleTouchMove.bind(this);
+          this.handleTouchEnd = this.handleTouchEnd.bind(this);
+          window.addEventListener('touchstart', this.handleTouchStart);
+          window.addEventListener('touchmove', this.handleTouchMove, {passive: false});
+          window.addEventListener('touchend', this.handleTouchEnd);
+        },
+        remove: function() {
+          window.removeEventListener('touchstart', this.handleTouchStart);
+          window.removeEventListener('touchmove', this.handleTouchMove);
+          window.removeEventListener('touchend', this.handleTouchEnd);
+        },
+        handleTouchStart: function (e) {
+          if (e.touches.length !== 2 || !this.el.object3D.visible) return;
+          this.isPinching = true;
+          this.initialDistance = this.getDistance(e.touches[0], e.touches[1]);
+          this.initialScale = this.el.object3D.scale.x;
+        },
+        handleTouchMove: function (e) {
+          if (!this.isPinching || e.touches.length !== 2 || !this.el.object3D.visible) return;
+          e.preventDefault();
+          const currentDistance = this.getDistance(e.touches[0], e.touches[1]);
+          if (this.initialDistance === 0) return;
+          const scaleFactor = currentDistance / this.initialDistance;
+          let newScale = this.initialScale * scaleFactor;
+          newScale = Math.min(Math.max(newScale, this.data.minScale), this.data.maxScale);
+          this.el.object3D.scale.set(newScale, newScale, newScale);
+        },
+        handleTouchEnd: function (e) {
+          if (e.touches.length < 2) this.isPinching = false;
+        },
+        getDistance: function (touch1, touch2) {
+          const dx = touch1.clientX - touch2.clientX;
+          const dy = touch1.clientY - touch2.clientY;
+          return Math.sqrt(dx * dx + dy * dy);
+        }
+      });
+    </script>
+  </head>
+  <body>
+    
+    <!-- 全屏遮罩層：用於解鎖音頻 -->
+    <div id="start-screen">
+      <h1>AR UM Libary</h1>
+      <button id="start-btn">Start</button>
+    </div>
+
+    <a-scene mindar-image="imageTargetSrc: assets/targets.mind; filterMinCF:0.0005; filterBeta: 0; warmupTolerance: 1;" 
+             color-space="sRGB" 
+             renderer="colorManagement: true, physicallyCorrectLights" 
+             vr-mode-ui="enabled: false" 
+             device-orientation-permission-ui="enabled: false"
+             target-priority-manager>
+      
+      <a-assets>
+        <!-- 重要：移除了 muted，或者設為 muted="false" 但通常建議在JS裡控制 -->
+        <!-- 注意：加上 playsinline 確保在 iOS 上不全屏播放 -->
+        <video id="vid1" src="assets/asset1.mp4" preload="auto" loop playsinline webkit-playsinline crossorigin="anonymous"></video>
+        <video id="vid2" src="assets/asset2.mp4" preload="auto" loop playsinline webkit-playsinline crossorigin="anonymous"></video>
+        <video id="vid3" src="assets/asset3.mp4" preload="auto" loop playsinline webkit-playsinline crossorigin="anonymous"></video>
+        <video id="vid4" src="assets/asset4.mp4" preload="auto" loop playsinline webkit-playsinline crossorigin="anonymous"></video>
+        <video id="vid5" src="assets/asset5.mp4" preload="auto" loop playsinline webkit-playsinline crossorigin="anonymous"></video>
+      </a-assets>
+
+      <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+
+      <!-- 實體將由下方的 JavaScript 生成 -->
+    </a-scene>
+
+    <script>
+      document.addEventListener("DOMContentLoaded", function() {
+        const scene = document.querySelector('a-scene');
+        
+        // --- 解鎖音頻邏輯 ---
+        const startScreen = document.getElementById('start-screen');
+        const startBtn = document.getElementById('start-btn');
+        const videos = document.querySelectorAll('video');
+
+        // 初始全部靜音，防止報錯
+        videos.forEach(v => v.muted = true);
+
+        startBtn.addEventListener('click', () => {
+          // 隱藏遮罩
+          startScreen.style.display = 'none';
+          
+          // 關鍵步驟：遍歷所有視頻，解鎖聲音權限
+          videos.forEach(v => {
+            v.muted = false; // 開啟聲音
+            // 嘗試播放一瞬間然後暫停，這樣瀏覽器就認為用戶同意播放聲音了
+            v.play().then(() => {
+              v.pause();
+              v.currentTime = 0;
+            }).catch((err) => {
+              console.log("Audio unlock failed for", v, err);
+            });
+          });
+        });
+
+        // --- 自動生成 Target 邏輯 ---
+        const config = [
+          { targets: [0, 1, 2],    video: '#vid1' }, 
+          { targets: [3, 4, 5],    video: '#vid2' }, 
+          { targets: [6, 7, 8],    video: '#vid3' }, 
+          { targets: [9, 10],      video: '#vid4' }, 
+          { targets: [11, 12, 13], video: '#vid5' }  
+        ];
+
+        config.forEach(group => {
+          group.targets.forEach(index => {
+            const entity = document.createElement('a-entity');
+            entity.setAttribute('mindar-image-target', `targetIndex: ${index}`);
+            entity.setAttribute('play-on-target', `video: ${group.video}`);
+
+            const videoEl = document.createElement('a-video');
+            videoEl.setAttribute('src', group.video);
+            videoEl.setAttribute('position', '0 0 0');
+            videoEl.setAttribute('height', '0.552');
+            videoEl.setAttribute('width', '1');
+            videoEl.setAttribute('pinch-to-zoom', '');
+
+            entity.appendChild(videoEl);
+            scene.appendChild(entity);
+          });
+        });
+      });
+    </script>
+  </body>
+</html>
